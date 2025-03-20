@@ -7,8 +7,13 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
+import android.util.Log
 import fi.iki.elonen.NanoHTTPD
-
+import android.net.wifi.WifiManager
+import java.net.InetAddress
+import java.net.UnknownHostException
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import android.widget.TextView
@@ -18,13 +23,16 @@ import java.io.IOException
 
 class MainActivity : AppCompatActivity() {
     private lateinit var batteryTextView: TextView
+    private lateinit var ipaddresst: TextView
     private lateinit var server: SimpleWebServer
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         batteryTextView = findViewById(R.id.batteryTextView)
+        ipaddresst = findViewById(R.id.ipaddress)
 
+        val port = 8080
         // إنشاء مستقبل لمراقبة نسبة البطارية
         val batteryReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
@@ -33,7 +41,7 @@ class MainActivity : AppCompatActivity() {
 
                 if (level != -1 && temperature != -1) {
                     val tempCelsius = temperature / 10.0  // تحويل إلى درجة مئوية
-                    updateBatteryInfo(level, tempCelsius)
+                    updateBatteryInfo(level, tempCelsius, port)
                 }
             }
         }
@@ -41,16 +49,19 @@ class MainActivity : AppCompatActivity() {
         // تسجيل المستقبل لمراقبة تغييرات مستوى البطارية
         registerReceiver(batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
 
-        server = SimpleWebServer(this, 8080)
+        server = SimpleWebServer(this, port)
         server.start()
     }
 
-    private fun updateBatteryInfo(level: Int, temperature: Double) {
+    private fun updateBatteryInfo(level: Int, temperature: Double, port: Int) {
         // تحديث واجهة المستخدم
         batteryTextView.text = "نسبة البطارية: $level%\nدرجة حرارة البطارية: $temperature°C"
 
         // كتابة البيانات إلى ملف HTML
         writeBatteryToHtml(level, temperature)
+        var ip = getLocalIpAddress(this) + ":" + port
+        ipaddresst.setText(ip)
+
     }
     private fun writeBatteryToHtml(level: Int, temperature: Double) {
         val htmlContent = """
@@ -82,6 +93,27 @@ class MainActivity : AppCompatActivity() {
         }
 
         }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        Log.d("PhoneInfoKWR", "التطبيق يتم إغلاقه!")
+        server.stop()
+    }
+    fun getLocalIpAddress(context: Context): String? {
+        val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        val wifiInfo = wifiManager.connectionInfo
+        val ipAddress = wifiInfo.ipAddress
+
+        if (ipAddress == 0) return null  // لم يتم العثور على عنوان IP
+
+        return try {
+            val byteBuffer = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(ipAddress)
+            InetAddress.getByAddress(byteBuffer.array()).hostAddress
+        } catch (e: UnknownHostException) {
+            null
+        }
+    }
+
     }
 class SimpleWebServer(private val context: Context, port: Int) : NanoHTTPD(port) {
 
@@ -89,7 +121,7 @@ class SimpleWebServer(private val context: Context, port: Int) : NanoHTTPD(port)
         val uri = session?.uri ?: "/"
 
         return when (uri) {
-            "/" -> serveText(context.filesDir)
+            "/" -> serveFile(File(context.getExternalFilesDir(null), "battery_status.html"))
             else -> newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "404 - File Not Found")
         }
     }
@@ -98,8 +130,8 @@ class SimpleWebServer(private val context: Context, port: Int) : NanoHTTPD(port)
         return newFixedLengthResponse(Response.Status.OK, "text/plain", text)
     }
 
-    private fun serveFile(fileName: String): Response {
-        val file = File(context.filesDir, fileName)
+    private fun serveFile(fileName: File): Response {
+        val file = fileName
 
         return if (file.exists()) {
             newFixedLengthResponse(Response.Status.OK, "text/html", file.readText())
